@@ -11,16 +11,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from PIL import Image
-import sofima
+from sofima import stitch_elastic, stitch_rigid, mesh, flow_utils, warp
 import pandas as pd
 
 logging.basicConfig(level=logging.INFO)
 
 def with_timer(func):
     def wrapper(*args, **kwargs):
-        start_time = time.time()
+        start_time = time()
         result = func(*args, **kwargs)
-        end_time = time.time()
+        end_time = time()
         elapsed_time = end_time - start_time
         logging.info(f"{func.__name__} took {elapsed_time} seconds to execute.")
         return result
@@ -110,18 +110,18 @@ def compute_coarse_tile_positions(
 ):
     logging.info("Computing coarse tile positions")
 
-    coarse_offsets_x, coarse_offsets_y = sofima.stitch_rigid.compute_coarse_offsets(
+    coarse_offsets_x, coarse_offsets_y = stitch_rigid.compute_coarse_offsets(
         tile_space, tile_map, overlaps_xy
     )
 
     if np.inf in coarse_offsets_x:
-        coarse_offsets_x = sofima.stitch_rigid.interpolate_missing_offsets(coarse_offsets_x, -1)
+        coarse_offsets_x = stitch_rigid.interpolate_missing_offsets(coarse_offsets_x, -1)
     if np.inf in coarse_offsets_y:
-        coarse_offsets_y = sofima.stitch_rigid.interpolate_missing_offsets(coarse_offsets_y, -2)
+        coarse_offsets_y = stitch_rigid.interpolate_missing_offsets(coarse_offsets_y, -2)
 
     logging.info("optimize_coarse_mesh")
 
-    coarse_mesh = sofima.stitch_rigid.optimize_coarse_mesh(
+    coarse_mesh = stitch_rigid.optimize_coarse_mesh(
         coarse_offsets_x, coarse_offsets_y
     )
 
@@ -137,23 +137,23 @@ def cleanup_flow_fields(fine_x, fine_y):
         "max_magnitude": 0,
     }
     fine_x = {
-        k: sofima.flow_utils.clean_flow(v[:, np.newaxis, ...], **kwargs)[:, 0, :, :]
+        k: flow_utils.clean_flow(v[:, np.newaxis, ...], **kwargs)[:, 0, :, :]
         for k, v in fine_x.items()
     }
     fine_y = {
-        k: sofima.flow_utils.clean_flow(v[:, np.newaxis, ...], **kwargs)[:, 0, :, :]
+        k: flow_utils.clean_flow(v[:, np.newaxis, ...], **kwargs)[:, 0, :, :]
         for k, v in fine_y.items()
     }
 
     kwargs = {"min_patch_size": 10, "max_gradient": -1, "max_deviation": -1}
     fine_x = {
-        k: sofima.flow_utils.reconcile_flows([v[:, np.newaxis, ...]], **kwargs)[
+        k: flow_utils.reconcile_flows([v[:, np.newaxis, ...]], **kwargs)[
             :, 0, :, :
         ]
         for k, v in fine_x.items()
     }
     fine_y = {
-        k: sofima.flow_utils.reconcile_flows([v[:, np.newaxis, ...]], **kwargs)[
+        k: flow_utils.reconcile_flows([v[:, np.newaxis, ...]], **kwargs)[
             :, 0, :, :
         ]
         for k, v in fine_y.items()
@@ -170,12 +170,12 @@ def compute_flow_maps(coarse_offsets_x, coarse_offsets_y, tile_map, stride):
     logging.info("Computing flow maps")
 
     logging.info("compute_flow_map x")
-    fine_x, offsets_x = sofima.stitch_elastic.compute_flow_map(
+    fine_x, offsets_x = stitch_elastic.compute_flow_map(
         tile_map, coarse_offsets_x, 0, stride=(stride, stride), batch_size=4
     )
 
     logging.info("compute_flow_map y")
-    fine_y, offsets_y = sofima.stitch_elastic.compute_flow_map(
+    fine_y, offsets_y = stitch_elastic.compute_flow_map(
         tile_map, coarse_offsets_y, 1, stride=(stride, stride), batch_size=4
     )
 
@@ -189,7 +189,7 @@ def compute_flow_maps(coarse_offsets_x, coarse_offsets_y, tile_map, stride):
 def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fine_y, offsets_x, offsets_y, tile_map, stride):
     logging.info("Preparing data for mesh solver")
 
-    fx, fy, x, nbors, key_to_idx = sofima.stitch_elastic.aggregate_arrays(
+    fx, fy, x, nbors, key_to_idx = stitch_elastic.aggregate_arrays(
         (coarse_offsets_x, fine_x, offsets_x),
         (coarse_offsets_y, fine_y, offsets_y),
         list(tile_map.keys()),
@@ -201,7 +201,7 @@ def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fin
     @jax.jit
     def prev_fn(x):
         target_fn = ft.partial(
-            sofima.stitch_elastic.compute_target_mesh,
+            stitch_elastic.compute_target_mesh,
             x=x,
             fx=fx,
             fy=fy,
@@ -216,7 +216,7 @@ def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fin
     # case you might want use aggressive flow filtering to ensure that there are no
     # inaccurate flow vectors). Lower ratios will reduce deformation, which, depending
     # on the initial state of the tiles, might result in visible seams.
-    mesh_integration_config = sofima.mesh.IntegrationConfig(
+    mesh_integration_config = mesh.IntegrationConfig(
         dt=0.001,
         gamma=0.0,
         k0=0.01,
@@ -233,7 +233,7 @@ def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fin
     )
 
     logging.info("Running mesh solver")
-    x, ekin, t = sofima.mesh.relax_mesh(
+    x, ekin, t = mesh.relax_mesh(
         x, None, mesh_integration_config, prev_fn=prev_fn   
     )
 
@@ -246,7 +246,7 @@ def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fin
 @with_timer
 def warp_and_render_tiles(tile_map, meshes, stride):
     logging.info("Warping and rendering the stitched tiles")
-    stitched, mask = sofima.warp.render_tiles(
+    stitched, mask = warp.render_tiles(
         tile_map, meshes, stride=(stride, stride), parallelism=32
     )
     return stitched, mask
@@ -272,11 +272,11 @@ def main(section_path: str):
     supertile_map = generate_supertile_map_from_csv(f"{section_path}/metadata/stage_positions.csv")
 
     # Here is where you would slice out a subset of supertiles to stich, if desired:
-    # first_x=3
-    # first_y=7
-    # d_x=2
-    # d_y=2
-    # supertile_map = supertile_map[first_x : first_x + d_x, first_y : first_y + d_y]
+    first_x=3
+    first_y=7
+    d_x=2
+    d_y=2
+    supertile_map = supertile_map[first_x : first_x + d_x, first_y : first_y + d_y]
 
     tile_id_map = generate_tile_id_map(supertile_map)
 
