@@ -36,7 +36,6 @@ def parse_section_path(section_path):
     return reel, blade, section
 
 
-
 def generate_supertile_map_from_csv(csv_path) -> np.ndarray:
     """
     Generate a 2D array of supertile_ids from the stage_positions.csv file
@@ -266,29 +265,38 @@ def main(section_path: str):
         f"reel{reel}_blade{blade}_s{section}_{datestamp}_stitched.npy"
     )
 
-        # Resolution for flow field computation and mesh optimization.
+    # Resolution for flow field computation and mesh optimization.
     STRIDE = 20
 
     # Get the supertile map and generate the tile_id_map from stage_positions.csv
     supertile_map = generate_supertile_map_from_csv(f"{section_path}/metadata/stage_positions.csv")
+
+    # Here is where you would slice out a subset of supertiles to stich, if desired:
+    # first_x=3
+    # first_y=7
+    # d_x=2
+    # d_y=2
+    # supertile_map = supertile_map[first_x : first_x + d_x, first_y : first_y + d_y]
+
     tile_id_map = generate_tile_id_map(supertile_map)
 
 
-    ## These are the 5 compute-heavy steps of the stitching process
-    # Load the tiles from disk
+    ## These are the 5 time-consuming steps of the stitching process
+
+    # 1) Load the tiles from disk
     tile_map = load_tiles(tile_id_map, section_path)
 
-    # Compute the coarse tile positions and the initial mesh.
+    # 2) Compute the coarse tile positions and the initial mesh.
     coarse_offsets_x, coarse_offsets_y, coarse_mesh = compute_coarse_tile_positions(
         tile_space=tile_id_map.shape, tile_map=tile_map
     )
 
-    # Compute the flow maps between tile pairs.
+    # 3) Compute the flow maps between tile pairs.
     fine_x, fine_y, offsets_x, offsets_y = compute_flow_maps(
         coarse_offsets_x, coarse_offsets_y, tile_map, STRIDE
     )
 
-    # Run the mesh solver.
+    # 4) Run the mesh solver.
     meshes = run_mesh_solver(
         coarse_offsets_x,
         coarse_offsets_y,
@@ -301,7 +309,7 @@ def main(section_path: str):
         STRIDE,
     )
 
-    # Warp the tiles into a single image.
+    # 5) Warp the tiles into a single image.
     stitched, mask = warp_and_render_tiles(tile_map, meshes, STRIDE)
 
     # Save the section to disk
@@ -311,7 +319,6 @@ def main(section_path: str):
     # TODO: upload to neuroglancer w/ cloudvolume
 
     logging.info("Stitching completed successfully and result saved.")
-
 
 
 if __name__ == "__main__":
