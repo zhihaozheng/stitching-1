@@ -272,11 +272,11 @@ def main(section_path: str):
     supertile_map = generate_supertile_map_from_csv(f"{section_path}/metadata/stage_positions.csv")
 
     # Here is where you would slice out a subset of supertiles to stich, if desired:
-    first_x=3
-    first_y=7
-    d_x=2
-    d_y=2
-    supertile_map = supertile_map[first_x : first_x + d_x, first_y : first_y + d_y]
+    # first_x=3
+    # first_y=7
+    # d_x=2
+    # d_y=2
+    # supertile_map = supertile_map[first_x : first_x + d_x, first_y : first_y + d_y]
 
     tile_id_map = generate_tile_id_map(supertile_map)
 
