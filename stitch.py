@@ -322,7 +322,7 @@ def main(section_path: str):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Stith a section from disk')
+    parser = argparse.ArgumentParser(description='Stitch a section from disk')
     parser.add_argument('section_path', type=str, help='Path to the section to stitch')
     args = parser.parse_args()
     section_path = args.section_path
