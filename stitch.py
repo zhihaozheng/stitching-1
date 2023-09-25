@@ -14,15 +14,13 @@ from PIL import Image
 from sofima import stitch_elastic, stitch_rigid, mesh, flow_utils, warp
 import pandas as pd
 
-logging.basicConfig(level=logging.INFO)
-
 def with_timer(func):
     def wrapper(*args, **kwargs):
         start_time = time()
         result = func(*args, **kwargs)
         end_time = time()
         elapsed_time = end_time - start_time
-        logging.info(f"{func.__name__} took {elapsed_time} seconds to execute.")
+        print(f"{func.__name__} took {elapsed_time} seconds to execute.")
         return result
     return wrapper
 
@@ -90,14 +88,14 @@ def generate_tile_id_map(supertile_map) -> np.ndarray:
 @with_timer
 def load_tiles(tile_id_map, path_to_section: str) -> Mapping[tuple[int, int], np.ndarray]:
     """Load the tiles from disk and return a map of tile_id -> tile_image"""
-    logging.info("Loading tiles from disk")
+    print("Loading tiles from disk")
     tile_map = {}
     for y in range(tile_id_map.shape[0]):
         for x in range(tile_id_map.shape[1]):
             tile_id = tile_id_map[y, x]
             if tile_id is None:
                 continue
-            logging.info(f"Loading {tile_id}")
+            # print(f"Loading {tile_id}")
             with open(f"{path_to_section}/subtiles/tile_{tile_id}.bmp", "rb") as fp:
                 img = Image.open(fp)
                 tile_map[(x, y)] = np.array(img)
@@ -108,7 +106,7 @@ def load_tiles(tile_id_map, path_to_section: str) -> Mapping[tuple[int, int], np
 def compute_coarse_tile_positions(
     tile_space, tile_map, overlaps_xy=((1000, 1000), (1500, 1500))
 ):
-    logging.info("Computing coarse tile positions")
+    print("Computing coarse tile positions")
 
     coarse_offsets_x, coarse_offsets_y = stitch_rigid.compute_coarse_offsets(
         tile_space, tile_map, overlaps_xy
@@ -119,7 +117,7 @@ def compute_coarse_tile_positions(
     if np.inf in coarse_offsets_y:
         coarse_offsets_y = stitch_rigid.interpolate_missing_offsets(coarse_offsets_y, -2)
 
-    logging.info("optimize_coarse_mesh")
+    print("optimize_coarse_mesh")
 
     coarse_mesh = stitch_rigid.optimize_coarse_mesh(
         coarse_offsets_x, coarse_offsets_y
@@ -129,7 +127,7 @@ def compute_coarse_tile_positions(
 
 
 def cleanup_flow_fields(fine_x, fine_y):
-    logging.info("Cleaning up flow fields")
+    print("Cleaning up flow fields")
     kwargs = {
         "min_peak_ratio": 1.4,
         "min_peak_sharpness": 1.4,
@@ -167,14 +165,14 @@ def compute_flow_maps(coarse_offsets_x, coarse_offsets_y, tile_map, stride):
     # mesh is later optimized. The more deformed the tiles initially are, the lower
     # the stride needs to be to get good stitching results.
 
-    logging.info("Computing flow maps")
+    print("Computing flow maps")
 
-    logging.info("compute_flow_map x")
+    print("compute_flow_map x")
     fine_x, offsets_x = stitch_elastic.compute_flow_map(
         tile_map, coarse_offsets_x, 0, stride=(stride, stride), batch_size=4
     )
 
-    logging.info("compute_flow_map y")
+    print("compute_flow_map y")
     fine_y, offsets_y = stitch_elastic.compute_flow_map(
         tile_map, coarse_offsets_y, 1, stride=(stride, stride), batch_size=4
     )
@@ -187,7 +185,7 @@ def compute_flow_maps(coarse_offsets_x, coarse_offsets_y, tile_map, stride):
 
 @with_timer
 def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fine_y, offsets_x, offsets_y, tile_map, stride):
-    logging.info("Preparing data for mesh solver")
+    print("Preparing data for mesh solver")
 
     fx, fy, x, nbors, key_to_idx = stitch_elastic.aggregate_arrays(
         (coarse_offsets_x, fine_x, offsets_x),
@@ -232,7 +230,7 @@ def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fin
         remove_drift=True,
     )
 
-    logging.info("Running mesh solver")
+    print("Running mesh solver")
     x, ekin, t = mesh.relax_mesh(
         x, None, mesh_integration_config, prev_fn=prev_fn   
     )
@@ -245,7 +243,7 @@ def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fin
 
 @with_timer
 def warp_and_render_tiles(tile_map, meshes, stride):
-    logging.info("Warping and rendering the stitched tiles")
+    print("Warping and rendering the stitched tiles")
     stitched, mask = warp.render_tiles(
         tile_map, meshes, stride=(stride, stride), parallelism=32
     )
@@ -313,12 +311,12 @@ def main(section_path: str):
     stitched, mask = warp_and_render_tiles(tile_map, meshes, STRIDE)
 
     # Save the section to disk
-    logging.info("Saving the stiched section to disk")
+    print("Saving the stiched section to disk")
     np.save(stitched_filename, stitched)
     # TODO: save the mask to disk as well, 
     # TODO: upload to neuroglancer w/ cloudvolume
 
-    logging.info("Stitching completed successfully and result saved.")
+    print("Stitching completed successfully and result saved.")
 
 
 if __name__ == "__main__":
@@ -328,9 +326,9 @@ if __name__ == "__main__":
     section_path = args.section_path
     # section_path = "/scratch/zhihaozheng/mec/acqs/3-complete/Part1_reel1068_blade1_20230727/bladeseq-2023.08.01-19.14.39/s1257-2023.08.01-19.14.39"   
     
-    logging.info(f"Stitching section at {section_path}")
+    print(f"Stitching section at {section_path}")
 
     total_start = time()
     main(section_path)
     total_end = time()
-    logging.info(f"Total time elapsed: {total_end - total_start} seconds.")
+    print(f"Total time elapsed: {total_end - total_start} seconds.")
