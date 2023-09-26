@@ -254,7 +254,7 @@ def warp_and_render_tiles(tile_map, meshes, stride):
 
 ## Main
 
-def main(section_path: str):
+def main(section_path: str, first_x: int, first_y: int, d_x: int, d_y: int):
     ## Job config
 
     reel, blade, section = parse_section_path(section_path)
