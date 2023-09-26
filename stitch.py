@@ -259,23 +259,21 @@ def main(section_path: str):
 
     reel, blade, section = parse_section_path(section_path)
     datestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-    stitched_filename = (
-        f"reel{reel}_blade{blade}_s{section}_{datestamp}_stitched.npy"
-    )
+    
+    subset_string = ""
+    if d_x is not None and d_y is not None:
+        subset_string = f"_subset_x{first_x}_y{first_y}_dx{d_x}_dy{d_y}"
+    
+    stitched_filename = f"reel{reel}_blade{blade}_s{section}_{datestamp}{subset_string}_stitched.npy"
 
     # Resolution for flow field computation and mesh optimization.
     STRIDE = 20
 
     # Get the supertile map and generate the tile_id_map from stage_positions.csv
     supertile_map = generate_supertile_map_from_csv(f"{section_path}/metadata/stage_positions.csv")
-
-    # Here is where you would slice out a subset of supertiles to stich, if desired:
-    # first_x=3
-    # first_y=7
-    # d_x=2
-    # d_y=2
-    # supertile_map = supertile_map[first_x : first_x + d_x, first_y : first_y + d_y]
-
+ 
+    if d_x is not None and d_y is not None:
+        supertile_map = supertile_map[first_x : first_x + d_x, first_y : first_y + d_y]
     tile_id_map = generate_tile_id_map(supertile_map)
 
 
@@ -322,13 +320,22 @@ def main(section_path: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Stitch a section from disk')
     parser.add_argument('section_path', type=str, help='Path to the section to stitch')
+    parser.add_argument('--first_x', type=int, default=0, help='First x position of the supertile subset')
+    parser.add_argument('--first_y', type=int, default=0, help='First y position of the supertile subset')
+    parser.add_argument('--d_x', type=int, help='Width of the supertile subset')
+    parser.add_argument('--d_y', type=int, help='Height of the supertile subset')
+    
     args = parser.parse_args()
+    
     section_path = args.section_path
-    # section_path = "/scratch/zhihaozheng/mec/acqs/3-complete/Part1_reel1068_blade1_20230727/bladeseq-2023.08.01-19.14.39/s1257-2023.08.01-19.14.39"   
+    first_x = args.first_x
+    first_y = args.first_y
+    d_x = args.d_x
+    d_y = args.d_y
     
     print(f"Stitching section at {section_path}")
-
+    
     total_start = time()
-    main(section_path)
+    main(section_path, first_x, first_y, d_x, d_y)
     total_end = time()
     print(f"Total time elapsed: {total_end - total_start} seconds.")
