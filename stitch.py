@@ -13,6 +13,7 @@ import numpy as np
 from PIL import Image
 from sofima import stitch_elastic, stitch_rigid, mesh, flow_utils, warp
 import pandas as pd
+# from cloudvolume import CloudVolume
 
 def with_timer(func):
     def wrapper(*args, **kwargs):
@@ -24,20 +25,12 @@ def with_timer(func):
         return result
     return wrapper
 
-
-def parse_section_path(section_path):
-    # these are just for saving the output to a unique .npy file
-    # parse reel, blade, and section from section_path using regex. this should probably aways work
-    reel = re.search(r'reel(\d+)', section_path).group(1)
-    blade = re.search(r'blade(\d+)', section_path).group(1)
-    section = re.search(r's(\d+)', section_path).group(1)
-    return reel, blade, section
-
-
-def generate_supertile_map_from_csv(csv_path) -> np.ndarray:
+def generate_supertile_map_for_section(section_path) -> np.ndarray:
     """
     Generate a 2D array of supertile_ids from the stage_positions.csv file
     """
+
+    csv_path = f"{section_path}/metadata/stage_positions.csv"
 
     # Load the CSV file into a pandas DataFrame
     df = pd.read_csv(csv_path)
@@ -98,24 +91,27 @@ def load_tiles(tile_id_map, path_to_section: str) -> Mapping[tuple[int, int], np
             # print(f"Loading {tile_id}")
             with open(f"{path_to_section}/subtiles/tile_{tile_id}.bmp", "rb") as fp:
                 img = Image.open(fp)
-                tile_map[(x, y)] = np.array(img)
+                tile = np.array(img)
+                # if the tile is uniform, skip it
+                if np.all(tile == tile[0,0]):
+                    continue
+                tile_map[(x, y)] = tile
 
     return tile_map
 
 @with_timer
-def compute_coarse_tile_positions(
-    tile_space, tile_map, overlaps_xy=((1000, 1000), (1500, 1500))
-):
+def compute_coarse_tile_positions(tile_space, tile_map, overlaps_xy=((1000, 1000), (1500, 1500))):
     print("Computing coarse tile positions")
 
     coarse_offsets_x, coarse_offsets_y = stitch_rigid.compute_coarse_offsets(
         tile_space, tile_map, overlaps_xy
     )
 
-    if np.inf in coarse_offsets_x:
-        coarse_offsets_x = stitch_rigid.interpolate_missing_offsets(coarse_offsets_x, -1)
-    if np.inf in coarse_offsets_y:
-        coarse_offsets_y = stitch_rigid.interpolate_missing_offsets(coarse_offsets_y, -2)
+    coarse_offsets_x = stitch_rigid.interpolate_missing_offsets(coarse_offsets_x, -1)
+    coarse_offsets_y = stitch_rigid.interpolate_missing_offsets(coarse_offsets_y, -2)
+
+    assert np.inf not in coarse_offsets_x
+    assert np.inf not in coarse_offsets_y
 
     print("optimize_coarse_mesh")
 
@@ -124,7 +120,6 @@ def compute_coarse_tile_positions(
     )
 
     return np.squeeze(coarse_offsets_x), np.squeeze(coarse_offsets_y), coarse_mesh
-
 
 def cleanup_flow_fields(fine_x, fine_y):
     print("Cleaning up flow fields")
@@ -169,19 +164,18 @@ def compute_flow_maps(coarse_offsets_x, coarse_offsets_y, tile_map, stride):
 
     print("compute_flow_map x")
     fine_x, offsets_x = stitch_elastic.compute_flow_map(
-        tile_map, coarse_offsets_x, 0, stride=(stride, stride), batch_size=4
+        tile_map, coarse_offsets_x, 0, stride=(stride, stride)
     )
 
     print("compute_flow_map y")
     fine_y, offsets_y = stitch_elastic.compute_flow_map(
-        tile_map, coarse_offsets_y, 1, stride=(stride, stride), batch_size=4
+        tile_map, coarse_offsets_y, 1, stride=(stride, stride)
     )
 
     # Clean up the flow fields.
     fine_x, fine_y = cleanup_flow_fields(fine_x, fine_y)
 
     return fine_x, fine_y, offsets_x, offsets_y
-
 
 @with_timer
 def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fine_y, offsets_x, offsets_y, tile_map, stride):
@@ -234,6 +228,7 @@ def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fin
     x, ekin, t = mesh.relax_mesh(
         x, None, mesh_integration_config, prev_fn=prev_fn   
     )
+    print(f"Mesh solver finished after {t} iterations")
 
     # Unpack meshes into a dictionary.
     idx_to_key = {v: k for k, v in key_to_idx.items()}
@@ -249,20 +244,17 @@ def warp_and_render_tiles(tile_map, meshes, stride):
     )
     return stitched, mask
 
+def main(section_path: str, x: int, y: int, dx: int, dy: int):
 
-
-
-## Main
-
-def main(section_path: str, first_x: int, first_y: int, d_x: int, d_y: int):
-    ## Job config
-
-    reel, blade, section = parse_section_path(section_path)
+    # these should usually work, assuming the section_path has 
+    reel = re.search(r'reel(\d+)', section_path).group(1)
+    blade = re.search(r'blade(\d+)', section_path).group(1)
+    section = re.search(r's(\d+)', section_path).group(1)
     datestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     
     subset_string = ""
-    if d_x is not None and d_y is not None:
-        subset_string = f"_subset_x{first_x}_y{first_y}_dx{d_x}_dy{d_y}"
+    if dx is not None and dy is not None:
+        subset_string = f"_subset_x{x}_y{y}_dx{dx}_dy{dy}"
     
     stitched_filename = f"reel{reel}_blade{blade}_s{section}_{datestamp}{subset_string}_stitched.npy"
 
@@ -270,10 +262,10 @@ def main(section_path: str, first_x: int, first_y: int, d_x: int, d_y: int):
     STRIDE = 20
 
     # Get the supertile map and generate the tile_id_map from stage_positions.csv
-    supertile_map = generate_supertile_map_from_csv(f"{section_path}/metadata/stage_positions.csv")
+    supertile_map = generate_supertile_map_for_section(section_path)
  
-    if d_x is not None and d_y is not None:
-        supertile_map = supertile_map[first_x : first_x + d_x, first_y : first_y + d_y]
+    if dx is not None and dy is not None:
+        supertile_map = supertile_map[x : x + dx, y : y + dy]
     tile_id_map = generate_tile_id_map(supertile_map)
 
 
@@ -311,6 +303,7 @@ def main(section_path: str, first_x: int, first_y: int, d_x: int, d_y: int):
     # Save the section to disk
     print("Saving the stiched section to disk")
     np.save(stitched_filename, stitched)
+
     # TODO: save the mask to disk as well, 
     # TODO: upload to neuroglancer w/ cloudvolume
 
@@ -320,22 +313,24 @@ def main(section_path: str, first_x: int, first_y: int, d_x: int, d_y: int):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Stitch a section from disk')
     parser.add_argument('section_path', type=str, help='Path to the section to stitch')
-    parser.add_argument('--first_x', type=int, default=0, help='First x position of the supertile subset')
-    parser.add_argument('--first_y', type=int, default=0, help='First y position of the supertile subset')
-    parser.add_argument('--d_x', type=int, help='Width of the supertile subset')
-    parser.add_argument('--d_y', type=int, help='Height of the supertile subset')
+    parser.add_argument('--x', type=int, default=0, help='First x position of the supertile subset')
+    parser.add_argument('--y', type=int, default=0, help='First y position of the supertile subset')
+    parser.add_argument('--dx', type=int, help='Width of the supertile subset')
+    parser.add_argument('--dy', type=int, help='Height of the supertile subset')
     
     args = parser.parse_args()
     
     section_path = args.section_path
-    first_x = args.first_x
-    first_y = args.first_y
-    d_x = args.d_x
-    d_y = args.d_y
+    x = args.x
+    y = args.y
+    dx = args.dx
+    dy = args.dy
     
     print(f"Stitching section at {section_path}")
+    if dx is not None and dy is not None:
+        print(f"Subset: x={x}, y={y}, dx={dx}, dy={dy}")
     
     total_start = time()
-    main(section_path, first_x, first_y, d_x, d_y)
+    main(section_path, x, y, dx, dy)
     total_end = time()
     print(f"Total time elapsed: {total_end - total_start} seconds.")
