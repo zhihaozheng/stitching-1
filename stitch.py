@@ -13,7 +13,7 @@ import numpy as np
 from PIL import Image
 from sofima import stitch_elastic, stitch_rigid, mesh, flow_utils, warp
 import pandas as pd
-# from cloudvolume import CloudVolume
+from cloudvolume import CloudVolume
 
 def with_timer(func):
     def wrapper(*args, **kwargs):
@@ -21,7 +21,7 @@ def with_timer(func):
         result = func(*args, **kwargs)
         end_time = time()
         elapsed_time = end_time - start_time
-        print(f"{func.__name__} took {elapsed_time} seconds to execute.")
+        print(f"{func.__name__} took {elapsed_time:.0f} seconds to execute.")
         return result
     return wrapper
 
@@ -100,7 +100,7 @@ def load_tiles(tile_id_map, path_to_section: str) -> Mapping[tuple[int, int], np
     return tile_map
 
 @with_timer
-def compute_coarse_tile_positions(tile_space, tile_map, overlaps_xy=((1000, 1000), (1500, 1500))):
+def compute_coarse_tile_positions(tile_space, tile_map, overlaps_xy=((1000, 1500), (1000, 1500))):
     print("Computing coarse tile positions")
 
     coarse_offsets_x, coarse_offsets_y = stitch_rigid.compute_coarse_offsets(
@@ -240,9 +240,30 @@ def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fin
 def warp_and_render_tiles(tile_map, meshes, stride):
     print("Warping and rendering the stitched tiles")
     stitched, mask = warp.render_tiles(
-        tile_map, meshes, stride=(stride, stride), parallelism=32
+        tile_map, meshes, stride=(stride, stride), parallelism=64
     )
     return stitched, mask
+
+
+@with_timer
+def send_to_cloudvolume(stitched, stitched_filename):
+    stitched = stitched[..., np.newaxis]
+    x,y,z = stitched.shape
+    info = CloudVolume.create_new_info(
+        num_channels=1,
+        layer_type='image',
+        data_type='uint8',
+        encoding='raw',
+        voxel_offset=[0,0,0],
+        resolution=[4,4,40],
+        volume_size=[x,y,z],
+        chunk_size=[2048, 2048, 1]
+    )
+    vol = CloudVolume(f'matrix://bucket-test/{stitched_filename}', info=info)
+    vol.commit_info()
+    bbox = np.s_[0:x, 0:y, 0:z]
+    vol[bbox] = stitched
+
 
 def main(section_path: str, x: int, y: int, dx: int, dy: int):
 
@@ -256,7 +277,7 @@ def main(section_path: str, x: int, y: int, dx: int, dy: int):
     if dx is not None and dy is not None:
         subset_string = f"_subset_x{x}_y{y}_dx{dx}_dy{dy}"
     
-    stitched_filename = f"reel{reel}_blade{blade}_s{section}_{datestamp}{subset_string}_stitched.npy"
+    stitched_filename = f"reel{reel}_blade{blade}_s{section}_{datestamp}{subset_string}"
 
     # Resolution for flow field computation and mesh optimization.
     STRIDE = 20
@@ -302,13 +323,14 @@ def main(section_path: str, x: int, y: int, dx: int, dy: int):
 
     # Save the section to disk
     print("Saving the stiched section to disk")
-    np.save(stitched_filename, stitched)
+    save_path = "/scratch/rmorey"
+    np.save(f'{save_path}/{stitched_filename}_stitched.npy', stitched)
 
-    # TODO: save the mask to disk as well, 
-    # TODO: upload to neuroglancer w/ cloudvolume
+    print("sending to cloudvolume")
+    send_to_cloudvolume(stitched, stitched_filename)
+    print(stitched_filename)
 
     print("Stitching completed successfully and result saved.")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Stitch a section from disk')
@@ -333,4 +355,5 @@ if __name__ == "__main__":
     total_start = time()
     main(section_path, x, y, dx, dy)
     total_end = time()
-    print(f"Total time elapsed: {total_end - total_start} seconds.")
+    elapsed_time = total_end - total_start
+    print(f"Total time elapsed: {elapsed_time:.0f} seconds.")
