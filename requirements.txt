@@ -1,0 +1,6 @@
+jax
+numpy
+pandas
+pillow
+cloud-volume
+git+https://github.com/google-research/sofima
