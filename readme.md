@@ -4,6 +4,8 @@ Code for stitching sections using [SOFIMA](https://github.com/google-research/so
 
 ```
 conda env create -f environment.yml 
+conda activate stitching
+python -m pip install -r requirements.txt
 ```
 If that doesn't work, try:
 
