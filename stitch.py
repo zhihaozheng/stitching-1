@@ -3,9 +3,11 @@ import logging
 from datetime import datetime
 from time import time
 import re
+import os
 
 from typing import Mapping
 
+import click
 import functools as ft
 import jax
 import jax.numpy as jnp
@@ -21,7 +23,7 @@ def with_timer(func):
         result = func(*args, **kwargs)
         end_time = time()
         elapsed_time = end_time - start_time
-        print(f"{func.__name__} took {elapsed_time:.0f} seconds to execute.")
+        print(f'{func.__name__} took {elapsed_time:.0f} seconds to execute.')
         return result
     return wrapper
 
@@ -79,7 +81,7 @@ def generate_tile_id_map(supertile_map) -> np.ndarray:
     return np.array(tile_id_map)
 
 @with_timer
-def load_tiles(tile_id_map, path_to_section: str) -> Mapping[tuple[int, int], np.ndarray]:
+def load_tiles(tile_id_map: np.ndarray, path_to_section: str) -> Mapping[tuple[int, int], np.ndarray]:
     """Load the tiles from disk and return a map of tile_id -> tile_image"""
     print("Loading tiles from disk")
     tile_map = {}
@@ -264,8 +266,8 @@ def send_to_cloudvolume(stitched, stitched_filename):
     bbox = np.s_[0:x, 0:y, 0:z]
     vol[bbox] = stitched
 
+def stitch(section_path: str, x: int, y: int, dx: int, dy: int):
 
-def main(section_path: str, x: int, y: int, dx: int, dy: int):
 
     # these should usually work, assuming the section_path has 
     reel = re.search(r'reel(\d+)', section_path).group(1)
@@ -278,6 +280,9 @@ def main(section_path: str, x: int, y: int, dx: int, dy: int):
         subset_string = f"_subset_x{x}_y{y}_dx{dx}_dy{dy}"
     
     stitched_filename = f"reel{reel}_blade{blade}_s{section}_{datestamp}{subset_string}"
+    save_path_root = "/scratch/rmorey"
+    save_path = f"{save_path_root}/{stitched_filename}"
+    os.makedirs(save_path, exist_ok=True)
 
     # Resolution for flow field computation and mesh optimization.
     STRIDE = 20
@@ -296,34 +301,55 @@ def main(section_path: str, x: int, y: int, dx: int, dy: int):
     tile_map = load_tiles(tile_id_map, section_path)
 
     # 2) Compute the coarse tile positions and the initial mesh.
+    # if this fails we just have to reload the tiles, which is not a big deal
     coarse_offsets_x, coarse_offsets_y, coarse_mesh = compute_coarse_tile_positions(
         tile_space=tile_id_map.shape, tile_map=tile_map
     )
 
     # 3) Compute the flow maps between tile pairs.
-    fine_x, fine_y, offsets_x, offsets_y = compute_flow_maps(
-        coarse_offsets_x, coarse_offsets_y, tile_map, STRIDE
-    )
+    # if this fails, we want to save the work we've done so far
+    try:
+        fine_x, fine_y, offsets_x, offsets_y = compute_flow_maps(
+            coarse_offsets_x, coarse_offsets_y, tile_map, STRIDE
+        )
+    except Exception as e:
+        print("error during compute_flow_maps, saving coarse_offsets_x, coarse_offsets_y, coarse_mesh to disk")
+        np.save(f'{save_path}/coarse_offsets_x.npy', coarse_offsets_x)
+        np.save(f'{save_path}/coarse_offsets_y.npy', coarse_offsets_y)
+        np.save(f'{save_path}/coarse_mesh.npy', coarse_mesh)
+        raise e
 
     # 4) Run the mesh solver.
-    meshes = run_mesh_solver(
-        coarse_offsets_x,
-        coarse_offsets_y,
-        coarse_mesh,
-        fine_x,
-        fine_y,
-        offsets_x,
-        offsets_y,
-        tile_map,
-        STRIDE,
-    )
+    # if this fails, we want to save the work we've done so far
+    try:
+        meshes = run_mesh_solver(
+            coarse_offsets_x,
+            coarse_offsets_y,
+            coarse_mesh,
+            fine_x,
+            fine_y,
+            offsets_x,
+            offsets_y,
+            tile_map,
+            STRIDE,
+        )
+    except Exception as e:
+        print("error during run_mesh_solver, saving coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fine_y, offsets_x, offsets_y to disk")
+        np.save(f'{save_path}/coarse_offsets_x.npy', coarse_offsets_x)
+        np.save(f'{save_path}/coarse_offsets_y.npy', coarse_offsets_y)
+        np.save(f'{save_path}/coarse_mesh.npy', coarse_mesh)
+        np.save(f'{save_path}/fine_x.npy', fine_x)
+        np.save(f'{save_path}/fine_y.npy', fine_y)
+        np.save(f'{save_path}/offsets_x.npy', offsets_x)
+        np.save(f'{save_path}/offsets_y.npy', offsets_y)
+        raise e
 
     # 5) Warp the tiles into a single image.
     stitched, mask = warp_and_render_tiles(tile_map, meshes, STRIDE)
 
     # Save the section to disk
     print("Saving the stiched section to disk")
-    save_path = "/scratch/rmorey"
+
     np.save(f'{save_path}/{stitched_filename}_stitched.npy', stitched)
 
     print("sending to cloudvolume")
@@ -332,28 +358,26 @@ def main(section_path: str, x: int, y: int, dx: int, dy: int):
 
     print("Stitching completed successfully and result saved.")
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Stitch a section from disk')
-    parser.add_argument('section_path', type=str, help='Path to the section to stitch')
-    parser.add_argument('--x', type=int, default=0, help='First x position of the supertile subset')
-    parser.add_argument('--y', type=int, default=0, help='First y position of the supertile subset')
-    parser.add_argument('--dx', type=int, help='Width of the supertile subset')
-    parser.add_argument('--dy', type=int, help='Height of the supertile subset')
-    
-    args = parser.parse_args()
-    
-    section_path = args.section_path
-    x = args.x
-    y = args.y
-    dx = args.dx
-    dy = args.dy
-    
+@click.command()
+@click.argument('section_path', type=click.Path(exists=True))
+@click.option('--x', type=int, default=0, help='First x position of the supertile subset')
+@click.option('--y', type=int, default=0, help='First y position of the supertile subset')
+@click.option('--dx', type=int, help='Width of the supertile subset')
+@click.option('--dy', type=int, help='Height of the supertile subset')
+def cli(section_path, x, y, dx, dy):
+    """
+    Stitch a section from disk at the specified SECTION_PATH.
+    """
     print(f"Stitching section at {section_path}")
     if dx is not None and dy is not None:
         print(f"Subset: x={x}, y={y}, dx={dx}, dy={dy}")
-    
+
     total_start = time()
-    main(section_path, x, y, dx, dy)
+
+    stitch(section_path, x, y, dx, dy) 
     total_end = time()
     elapsed_time = total_end - total_start
     print(f"Total time elapsed: {elapsed_time:.0f} seconds.")
+
+if __name__ == "__main__":
+    cli()
