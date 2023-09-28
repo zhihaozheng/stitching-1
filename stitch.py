@@ -350,11 +350,11 @@ def stitch(section_path: str, x: int, y: int, dx: int, dy: int):
     # Save the section to disk
     print("Saving the stiched section to disk")
 
-    np.save(f'{save_path}/{stitched_filename}_stitched.npy', stitched)
+    np.save(f'{save_path}/stitched.npy', stitched)
 
     print("sending to cloudvolume")
     send_to_cloudvolume(stitched, stitched_filename)
-    print(stitched_filename)
+    print(f"precomputed://https://s3-hpcrc.rc.princeton.edu/bucket-test/{stitched_filename})
 
     print("Stitching completed successfully and result saved.")
 
