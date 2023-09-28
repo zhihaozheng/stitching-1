@@ -4,4 +4,6 @@ pandas
 pillow
 cloud-volume
 click
+task-queue
+igneous-pipeline
 git+https://github.com/google-research/sofima

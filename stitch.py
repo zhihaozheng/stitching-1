@@ -16,6 +16,10 @@ from PIL import Image
 from sofima import stitch_elastic, stitch_rigid, mesh, flow_utils, warp
 import pandas as pd
 from cloudvolume import CloudVolume
+from igneous.task_creation import create_downsampling_tasks
+from taskqueue import LocalTaskQueue
+
+CLOUDVOLUME_PATH = "matrix://bucket-test"
 
 def with_timer(func):
     def wrapper(*args, **kwargs):
@@ -261,13 +265,20 @@ def send_to_cloudvolume(stitched, stitched_filename):
         volume_size=[x,y,z],
         chunk_size=[2048, 2048, 1]
     )
-    vol = CloudVolume(f'matrix://bucket-test/{stitched_filename}', info=info)
+    vol = CloudVolume(f'{CLOUDVOLUME_PATH}/{stitched_filename}', info=info)
     vol.commit_info()
     bbox = np.s_[0:x, 0:y, 0:z]
     vol[bbox] = stitched
 
-def stitch(section_path: str, x: int, y: int, dx: int, dy: int):
+@with_timer
+def downsample_with_igneous(layer_path):
+    tq = LocalTaskQueue(parallel=16)
+    tasks = create_downsampling_tasks(layer_path)
+    tq.insert(tasks)
+    tq.execute()
 
+
+def stitch(section_path: str, x: int, y: int, dx: int, dy: int):
 
     # these should usually work, assuming the section_path has 
     reel = re.search(r'reel(\d+)', section_path).group(1)
@@ -307,7 +318,7 @@ def stitch(section_path: str, x: int, y: int, dx: int, dy: int):
     )
 
     # 3) Compute the flow maps between tile pairs.
-    # if this fails, we want to save the work we've done so far
+    # if this or any subsequent step fails, we want to save the work we've done so far
     try:
         fine_x, fine_y, offsets_x, offsets_y = compute_flow_maps(
             coarse_offsets_x, coarse_offsets_y, tile_map, STRIDE
@@ -320,7 +331,6 @@ def stitch(section_path: str, x: int, y: int, dx: int, dy: int):
         raise e
 
     # 4) Run the mesh solver.
-    # if this fails, we want to save the work we've done so far
     try:
         meshes = run_mesh_solver(
             coarse_offsets_x,
@@ -345,17 +355,28 @@ def stitch(section_path: str, x: int, y: int, dx: int, dy: int):
         raise e
 
     # 5) Warp the tiles into a single image.
-    stitched, mask = warp_and_render_tiles(tile_map, meshes, STRIDE)
-
-    # Save the section to disk
-    print("Saving the stiched section to disk")
-
-    np.save(f'{save_path}/stitched.npy', stitched)
+    try:
+        stitched, mask = warp_and_render_tiles(tile_map, meshes, STRIDE)
+    except Exception as e:
+        print("error during warp_and_render_tiles, saving meshes to disk")
+        np.save(f'{save_path}/meshes.npy', meshes)
+        raise e
 
     print("sending to cloudvolume")
-    send_to_cloudvolume(stitched, stitched_filename)
-    print(f"precomputed://https://s3-hpcrc.rc.princeton.edu/bucket-test/{stitched_filename})
+    # if this fails for some reason, we fall back to saving to disk
+    try:
+        send_to_cloudvolume(stitched, stitched_filename)
+    except Exception as e:
+        print("Saving the stiched section to disk")
+        np.save(f'{save_path}/stitched.npy', stitched)
+        raise e
 
+    # downsample with igneous
+    layer_path = f"{CLOUDVOLUME_PATH}/{stitched_filename}"
+    print("downsampling with igneous")
+    downsample_with_igneous(layer_path)
+
+    print(f"precomputed://https://s3-hpcrc.rc.princeton.edu/bucket-test/{stitched_filename}")
     print("Stitching completed successfully and result saved.")
 
 @click.command()
