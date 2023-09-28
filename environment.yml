@@ -1,0 +1,12 @@
+name: stitching
+channels:
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - jax
+  - cuda-nvcc
+  - jaxlib[build=*cuda*]
+  - pip
+  - pip:
+    - git+https://github.com/google-research/sofima  
