@@ -6,4 +6,5 @@ cloud-volume
 click
 task-queue
 igneous-pipeline
+psutil
 git+https://github.com/google-research/sofima
