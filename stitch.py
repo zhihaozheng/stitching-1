@@ -162,6 +162,7 @@ def load_tiles(tile_id_map: np.ndarray, path_to_section: str) -> Mapping[tuple[i
     """Load the tiles from disk and return a map of tile_id -> tile_image"""
     logger.info("Loading tiles from disk")
     tile_map = {}
+
     for y in range(tile_id_map.shape[0]):
         for x in range(tile_id_map.shape[1]):
             tile_id = tile_id_map[y, x]
@@ -176,10 +177,20 @@ def load_tiles(tile_id_map: np.ndarray, path_to_section: str) -> Mapping[tuple[i
                     continue
                 tile_map[(x, y)] = tile
 
+    if len(tile_map) == 0:
+        logger.error("Only black tiles found! Can't stich empty set of tiles.")
+        raise ValueError("Only black tiles found! Can't stich empty set of tiles.")
+
     return tile_map
 
 @with_timer
-def compute_coarse_tile_positions(tile_space, tile_map, overlaps_xy=((1000, 1500), (1000, 1500))):
+def compute_coarse_tile_positions(
+        tile_space, 
+        tile_map):
+    
+    # overlaps_xy=((700, 800, 900, 1000, 1300, 1500), (700, 800, 900, 1000, 1300, 1500))
+    overlaps_xy = (tuple(range(700, 1600, 100)), tuple(range(700, 1600, 100)))
+
     logger.info("Computing coarse tile positions")
 
     coarse_offsets_x, coarse_offsets_y = stitch_rigid.compute_coarse_offsets(
@@ -257,34 +268,105 @@ def compute_flow_maps(coarse_offsets_x, coarse_offsets_y, tile_map, stride):
     return fine_x, fine_y, offsets_x, offsets_y
 
 @with_timer
-def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fine_y, offsets_x, offsets_y, tile_map, stride):
+def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fine_y, offsets_x, offsets_y, tile_shape, tile_coords, stride):
     logger.info("Preparing data for mesh solver")
 
-    breakpoint()
     fx, fy, x, nbors, key_to_idx = stitch_elastic.aggregate_arrays(
         (coarse_offsets_x, fine_x, offsets_x),
         (coarse_offsets_y, fine_y, offsets_y),
-        list(tile_map.keys()),
+        tile_coords,
         coarse_mesh[:, 0, ...],
         stride=(stride, stride),
-        tile_shape=next(iter(tile_map.values())).shape,
+        tile_shape=tile_shape,
     )
 
     # Convert flow maps to dtype=float32
     fx = fx.astype(np.float32)
     fy = fx.astype(np.float32)
-    
-    @jax.jit
-    def prev_fn(x):
-        target_fn = ft.partial(
-            stitch_elastic.compute_target_mesh,
-            x=x,
-            fx=fx,
-            fy=fy,
-            stride=(stride, stride),
-        )
-        x = jax.vmap(target_fn)(nbors)
-        return jnp.transpose(x, [1, 0, 2, 3])
+
+    # If we have multiple devices, use them by sharding the mesh, flows, and neighborhood
+    # data (by tile dimension) accross devices.
+    n_devices = len(jax.local_devices())
+    if n_devices > 1:
+        logger.info(f"Using {n_devices} devices for mesh solver")
+        from jax.experimental import mesh_utils
+        from jax.sharding import PositionalSharding
+        from jax.experimental.shard_map import shard_map
+        devices = mesh_utils.create_device_mesh((n_devices,))
+        sharding = PositionalSharding(devices)
+        
+        # Figure how much we need to pad our number of tiles to be divisible by number of 
+        # devices.
+        n_tiles = x.shape[1]
+        remainder = n_tiles % n_devices
+        if remainder > 0:
+            n_tiles_to_pad = n_devices - remainder
+            x = np.pad(x, ((0, 0), (0, n_tiles_to_pad), (0, 0), (0,0)), mode='constant', constant_values=0.0)
+            fx = np.pad(fx, ((0, 0), (0, n_tiles_to_pad), (0, 0), (0,0)), mode='constant', constant_values=np.nan)
+            fy = np.pad(fy, ((0, 0), (0, n_tiles_to_pad), (0, 0), (0,0)), mode='constant', constant_values=np.nan)
+            
+            # Pad with -1, this will cause mesh update to ignore these tiles when updating the mesh
+            nbors = np.pad(nbors, ((0, n_tiles_to_pad), (0, 0), (0, 0)), mode='constant', constant_values=-1)
+
+        else:
+            n_tiles_to_pad = 0
+            
+        x = jax.device_put(x, sharding.reshape(1,n_devices,1,1))
+        fx = jax.device_put(fx, sharding.reshape(1,n_devices,1,1))
+        fy = jax.device_put(fy, sharding.reshape(1,n_devices,1,1))
+        nbors = jax.device_put(nbors, sharding.reshape(n_devices,1,1))
+
+        @jax.jit
+        def prev_fn(x, fx, fy, nbors):    
+            target_fn = ft.partial(
+                stitch_elastic.compute_target_mesh,
+                x=x,
+                fx=fx,
+                fy=fy,
+                stride=(stride, stride),
+            )
+            
+            x = jax.lax.with_sharding_constraint(jax.vmap(target_fn)(nbors), sharding.reshape((n_devices,1,1,1)))
+            return jnp.transpose(x, [1, 0, 2, 3])
+        prev_fn_kwargs = {'fx': fx, 'fy': fy, 'nbors': nbors}
+        
+    else:
+        if x.shape[1] < 4000:
+            @jax.jit
+            def prev_fn(x, fx, fy, nbors):
+                target_fn = ft.partial(
+                    stitch_elastic.compute_target_mesh,
+                    x=x,
+                    fx=fx,
+                    fy=fy,
+                    stride=(stride, stride),
+                )
+                x = jax.vmap(target_fn)(nbors)
+                return jnp.transpose(x, [1, 0, 2, 3])
+        else:
+            logger.info("Attempting to use chunked version of prev_fn to because of large number of tiles.")
+            @jax.jit
+            def prev_fn(x, fx, fy, nbors):
+                """A chunked version of the prev mesh function that can handle large arrays"""
+                target_fn = ft.partial(
+                    stitch_elastic.compute_target_mesh,
+                    x=x,
+                    fx=fx,
+                    fy=fy,
+                    stride=(stride, stride),
+                )
+                tv_fn = jax.vmap(target_fn)
+                
+                chunk_size = int(x.shape[1] / 4)
+                b1 = tv_fn(nbors[0:chunk_size, :, :])
+                b2 = tv_fn(nbors[chunk_size:(2*chunk_size), :, :])
+                b3 = tv_fn(nbors[(2*chunk_size):(3*chunk_size), :, :])
+                b4 = tv_fn(nbors[(3*chunk_size):, :, :])
+                x = jnp.concatenate((b1, b2, b3, b4), axis=0)
+
+                return jnp.transpose(x, [1, 0, 2, 3])
+
+    prev_fn_kwargs = {'fx': fx, 'fy': fy, 'nbors': nbors}
 
     # These detault settings are expect to work well in most configurations. Perhaps
     # the most salient parameter is the elasticity ratio k0 / k. The larger it gets,
@@ -299,31 +381,40 @@ def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fin
         k=0.1,
         stride=stride,
         num_iters=1000,
-        max_iters=20000,
+        max_iters=100000,
         stop_v_max=0.001,
         dt_max=100,
         prefer_orig_order=True,
         start_cap=0.1,
         final_cap=10.0,
+        fire=True,
         remove_drift=True,
     )
 
     logger.info("Running mesh solver")
 
     # Turn on logging for the mesh solver
-    loggers = [logging.getLogger(name) for name in logging.root.manager.loggerDict if 'mesh' in name]
-    for l in loggers:
-        l.setLevel(logging.INFO)
+    from absl import logging as logging_absl
+    logging_absl.set_verbosity('info')
+
+    # jax.profiler.start_trace("logs/tensorboard_logdir")
 
     x, ekin, t = mesh.relax_mesh(
-        x, None, mesh_integration_config, prev_fn=prev_fn   
+        x, None, mesh_integration_config, 
+        prev_fn=prev_fn, prev_fn_kwargs=prev_fn_kwargs,  
     )
+
+    # x.block_until_ready()
+    # jax.profiler.stop_trace()
+
+    # Set the level back to warning
+    logging_absl.set_verbosity('warning')
   
     logger.info(f"Mesh solver finished after {t} iterations")
 
     # Unpack meshes into a dictionary.
     idx_to_key = {v: k for k, v in key_to_idx.items()}
-    meshes = {idx_to_key[i]: np.array(x[:, i : i + 1 :, :]) for i in range(x.shape[1])}
+    meshes = {idx_to_key[i]: np.array(x[:, i : i + 1 :, :]) for i in range(x.shape[1]) if i in idx_to_key}
 
     return meshes
 
@@ -366,7 +457,8 @@ def downsample_with_igneous(layer_path):
 def stitch(section_path: str, x: int, y: int, dx: int, dy: int, output_dir: str, no_render: bool = False, no_upload: bool = False, render_tiff: bool = False):
 
     logger.info(f"Number of CPU cores: {usable_cpu_count()}")
-
+    logger.info(f"Number of GPU(s): {len(jax.devices())}")
+    
     # these should usually work, assuming the section_path has 
     reel = re.search(r'reel(\d+)', section_path).group(1)
     blade = re.search(r'blade(\d+)', section_path).group(1)
@@ -403,6 +495,13 @@ def stitch(section_path: str, x: int, y: int, dx: int, dy: int, output_dir: str,
     # 1) Load the tiles from disk
     tile_map = load_tiles(tile_id_map, section_path)
 
+    # Save the tile_map metadata, for the mesh solver step, we don't actually
+    # need to load the tile map, we just need its dimensions. This can save 
+    # time if we are running only this step.
+    save_pickle({"tile_coords": list(tile_map.keys()), 
+                 "tile_shape": next(iter(tile_map.values())).shape}, 
+                 str(pathlib.Path(save_path) / 'tile_map_meta.pkl')) 
+
     # 2) Compute the coarse tile positions and the initial mesh.
     # if this fails we just have to reload the tiles, which is not a big deal
     
@@ -419,8 +518,11 @@ def stitch(section_path: str, x: int, y: int, dx: int, dy: int, output_dir: str,
         compute_flow_maps, coarse_offsets_x, coarse_offsets_y, tile_map, STRIDE
     )
 
-
     # 4) Run the mesh solver.
+    tile_map_meta = load_pickle(str(pathlib.Path(save_path) / 'tile_map_meta.pkl'))
+    tile_shape = tile_map_meta['tile_shape']
+    tile_coords = tile_map_meta['tile_coords']
+
     meshes = run_step(
         run_mesh_solver,
         coarse_offsets_x,
@@ -430,12 +532,13 @@ def stitch(section_path: str, x: int, y: int, dx: int, dy: int, output_dir: str,
         fine_y,
         offsets_x,
         offsets_y,
-        tile_map,
+        tile_shape,
+        tile_coords,
         STRIDE,
     )
 
     if no_render:
-        logger.info("Stiching completed sucessfully, skipping rendering of stiched images. "
+        logger.info("Stiching completed sucessfully, skipping rendering of stitched images. "
                     "Run without --no_render option to finnish")
         return
 
@@ -445,11 +548,11 @@ def stitch(section_path: str, x: int, y: int, dx: int, dy: int, output_dir: str,
         
         stitched, _ = warp_and_render_tiles(tile_map, meshes, STRIDE)
         
-        logger.info("Saving stiched image")
+        logger.info("Saving stitched image")
         np.save(out_image_path, stitched)
 
     else:
-        logger.info("Loading stiched image from disk")
+        logger.info("Loading stitched image from disk")
         stitched = np.load(out_image_path)
 
     tiff_path = f"{save_path}/{stitched_filename}.tiff"
