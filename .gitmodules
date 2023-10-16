@@ -1,0 +1,3 @@
+[submodule "sofima/sofima"]
+	path = sofima/sofima
+	url = https://github.com/davidt0x/sofima.git
