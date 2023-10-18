@@ -1,8 +1,6 @@
-Part1_reel1068_blade1_20230727/
-reel*
 
-runs/
-logs/
+sofima/runs/
+sofima/logs/
 
 slurm-*
 
