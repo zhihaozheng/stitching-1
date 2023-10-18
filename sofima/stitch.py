@@ -188,8 +188,12 @@ def compute_coarse_tile_positions(
         tile_space, 
         tile_map):
     
-    # overlaps_xy=((700, 800, 900, 1000, 1300, 1500), (700, 800, 900, 1000, 1300, 1500))
-    overlaps_xy = (tuple(range(700, 1600, 100)), tuple(range(700, 1600, 100)))
+    min_overlap_x = 700
+    max_overlap_x = 1200
+    min_overlap_y = 700
+    max_overlap_y = 1200
+
+    overlaps_xy = (tuple(range(min_overlap_x, max_overlap_x, 100)), tuple(range(min_overlap_y, max_overlap_y, 100)))
 
     logger.info("Computing coarse tile positions")
 
@@ -197,6 +201,10 @@ def compute_coarse_tile_positions(
         tile_space, tile_map, overlaps_xy
     )
 
+    logger.info("Interpolating missing offsets: ")
+    logger.info(f"\tNumber of Inf values in coarse_offsets_x: {np.sum(np.isinf(coarse_offsets_x))}")
+    logger.info(f"\tNumber of Inf values in coarse_offsets_y: {np.sum(np.isinf(coarse_offsets_x))}")
+    
     coarse_offsets_x = stitch_rigid.interpolate_missing_offsets(coarse_offsets_x, -1)
     coarse_offsets_y = stitch_rigid.interpolate_missing_offsets(coarse_offsets_y, -2)
 
@@ -382,7 +390,7 @@ def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fin
         stride=stride,
         num_iters=1000,
         max_iters=100000,
-        stop_v_max=0.001,
+        stop_v_max=0.03,
         dt_max=100,
         prefer_orig_order=True,
         start_cap=0.1,
@@ -399,7 +407,7 @@ def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fin
 
     # jax.profiler.start_trace("logs/tensorboard_logdir")
 
-    x, ekin, t = mesh.relax_mesh(
+    x, ekin, t, v = mesh.relax_mesh(
         x, None, mesh_integration_config, 
         prev_fn=prev_fn, prev_fn_kwargs=prev_fn_kwargs,  
     )
@@ -416,7 +424,7 @@ def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fin
     idx_to_key = {v: k for k, v in key_to_idx.items()}
     meshes = {idx_to_key[i]: np.array(x[:, i : i + 1 :, :]) for i in range(x.shape[1]) if i in idx_to_key}
 
-    return meshes
+    return meshes, v
 
 @with_timer
 def warp_and_render_tiles(tile_map, meshes, stride):
@@ -510,7 +518,7 @@ def stitch(section_path: str, x: int, y: int, dx: int, dy: int, output_dir: str,
     )
     
     # Resolution for flow field computation and mesh optimization.
-    STRIDE = 20
+    STRIDE = 30
 
     # 3) Compute the flow maps between tile pairs.
     # if this or any subsequent step fails, we want to save the work we've done so far
