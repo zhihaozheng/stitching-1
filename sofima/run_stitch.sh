@@ -12,4 +12,10 @@ conda activate stiching
 
 export PYTHONUNBUFFERED=TRUE
 
-python -u stitch.py Part1_reel1068_blade1_20230727/bladeseq-2023.08.01-19.14.39/s1257-2023.08.01-19.14.39 --output_dir runs/test_run_large --no_render
+# Make sure the user passed two arguments
+if [ "$#" -ne 2 ]; then
+    echo "Usage: $0 <input_image_dir> <output_dir>"
+    exit 1
+fi
+
+python -u $1 --output_dir $2 --no_render
