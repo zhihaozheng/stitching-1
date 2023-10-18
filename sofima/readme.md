@@ -13,7 +13,7 @@ If that doesn't work, try:
 conda env create -n stitching
 conda activate stitching
 conda install jaxlib=*=*cuda* jax cuda-nvcc -c conda-forge -c nvidia
-pip install numpy pandas pillow cloud-volume igneous-pipeline task-queue git+https://github.com/google-research/sofima
+pip install numpy pandas pillow cloud-volume igneous-pipeline task-queue git+https://github.com/davidt0x/sofima.git
 ```
 
 ## usage
