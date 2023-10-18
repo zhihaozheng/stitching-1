@@ -21,6 +21,9 @@ if __name__ == '__main__':
             scales=[4, 4])
 
     im = np.load(sys.argv[1])
+
+    im = np.transpose(im)
+
     print(im.shape)
 
     def ngLayer(data,res,oo=[0,0],tt='segmentation'):
