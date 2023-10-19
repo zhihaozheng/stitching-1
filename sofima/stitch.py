@@ -339,41 +339,18 @@ def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fin
         prev_fn_kwargs = {'fx': fx, 'fy': fy, 'nbors': nbors}
         
     else:
-        if x.shape[1] < 4000:
-            @jax.jit
-            def prev_fn(x, fx, fy, nbors):
-                target_fn = ft.partial(
-                    stitch_elastic.compute_target_mesh,
-                    x=x,
-                    fx=fx,
-                    fy=fy,
-                    stride=(stride, stride),
-                )
-                x = jax.vmap(target_fn)(nbors)
-                return jnp.transpose(x, [1, 0, 2, 3])
-        else:
-            logger.info("Attempting to use chunked version of prev_fn to because of large number of tiles.")
-            @jax.jit
-            def prev_fn(x, fx, fy, nbors):
-                """A chunked version of the prev mesh function that can handle large arrays"""
-                target_fn = ft.partial(
-                    stitch_elastic.compute_target_mesh,
-                    x=x,
-                    fx=fx,
-                    fy=fy,
-                    stride=(stride, stride),
-                )
-                tv_fn = jax.vmap(target_fn)
-                
-                chunk_size = int(x.shape[1] / 4)
-                b1 = tv_fn(nbors[0:chunk_size, :, :])
-                b2 = tv_fn(nbors[chunk_size:(2*chunk_size), :, :])
-                b3 = tv_fn(nbors[(2*chunk_size):(3*chunk_size), :, :])
-                b4 = tv_fn(nbors[(3*chunk_size):, :, :])
-                x = jnp.concatenate((b1, b2, b3, b4), axis=0)
-
-                return jnp.transpose(x, [1, 0, 2, 3])
-
+        @jax.jit
+        def prev_fn(x, fx, fy, nbors):
+            target_fn = ft.partial(
+                stitch_elastic.compute_target_mesh,
+                x=x,
+                fx=fx,
+                fy=fy,
+                stride=(stride, stride),
+            )
+            x = jax.vmap(target_fn)(nbors)
+            return jnp.transpose(x, [1, 0, 2, 3])
+    
     prev_fn_kwargs = {'fx': fx, 'fy': fy, 'nbors': nbors}
 
     # These detault settings are expect to work well in most configurations. Perhaps
@@ -385,12 +362,12 @@ def run_mesh_solver(coarse_offsets_x, coarse_offsets_y, coarse_mesh, fine_x, fin
     mesh_integration_config = mesh.IntegrationConfig(
         dt=0.001,
         gamma=0.0,
-        k0=0.01,
+        k0=0.05,
         k=0.1,
         stride=stride,
         num_iters=1000,
         max_iters=100000,
-        stop_v_max=0.03,
+        stop_v_max=0.0,
         dt_max=100,
         prefer_orig_order=True,
         start_cap=0.1,
@@ -518,7 +495,7 @@ def stitch(section_path: str, x: int, y: int, dx: int, dy: int, output_dir: str,
     )
     
     # Resolution for flow field computation and mesh optimization.
-    STRIDE = 30
+    STRIDE = 20
 
     # 3) Compute the flow maps between tile pairs.
     # if this or any subsequent step fails, we want to save the work we've done so far
@@ -531,7 +508,7 @@ def stitch(section_path: str, x: int, y: int, dx: int, dy: int, output_dir: str,
     tile_shape = tile_map_meta['tile_shape']
     tile_coords = tile_map_meta['tile_coords']
 
-    meshes = run_step(
+    meshes, v = run_step(
         run_mesh_solver,
         coarse_offsets_x,
         coarse_offsets_y,
