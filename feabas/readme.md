@@ -2,7 +2,7 @@
 
 Right now this is a mess and there are many manual steps still. And this list likely has some errors/missing steps. Double check for hardcoded paths, etc.
 
-0. Download FEABAS source from github, into say, `~/src/feabas`. Scripts currently expect this location. 
+0. Download FEABAS source from [github](https://github.com/YuelongWu/feabas), into say, `~/src/feabas`. Scripts currently expect this location. 
 1. Create a python venv for feabas. Scripts currently expect this location. 
     - `python -m venv ~/feabas-venv`
     - `source ~/feabas-venv/bin/activate`
