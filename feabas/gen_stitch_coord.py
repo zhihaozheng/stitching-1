@@ -50,9 +50,13 @@ def generate_tile_id_map(supertile_map):
             current_row = []
             for supertile in supertile_row:
                 for subtile in subtile_row:
-                    current_row.append(f"{supertile:04}_{subtile}")
-            tile_id_map.append(current_row)
-    return np.array(tile_id_map)
+                    if supertile is not None:
+                        current_row.append(f"{supertile:04}_{subtile}")
+                    else:
+                        current_row.append(None)
+            tile_id_map.append(np.array(current_row))
+    return np.vstack(tile_id_map)
+
 
 # Function to calculate the coordinates of each tile
 def calculate_tile_coordinates(tile_id_map, tile_size, overlap):
@@ -82,7 +86,7 @@ def gen_stitch_coords(root_dir, csv_path, output_dir):
         "{RESOLUTION}\t" + str(RESOLUTION),
         "{TILE_SIZE}\t" + "\t".join(map(str, TILE_SIZE))
     ]
-    file_content.extend([f"tile_{tile_id}.tif\t{coord_x}\t{coord_y}" for tile_id, coord_x, coord_y in tile_coordinates])
+    file_content.extend([f"tile_{tile_id}.tif\t{coord_x}\t{coord_y}" for tile_id, coord_x, coord_y in tile_coordinates if tile_id is not None])
 
     # Joining content into a single string
     file_content_str = "\n".join(file_content)
